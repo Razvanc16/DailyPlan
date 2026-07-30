@@ -5,15 +5,30 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no" />
     <title>DailyPlan</title>
 
-    <!-- PWA: manifest + iconițe -->
     <link rel="manifest" href="/manifest.json" />
     <meta name="theme-color" content="#0B0B0F" />
-
-    <!-- iOS specific: ca să pornească fullscreen ca aplicație -->
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="DailyPlan" />
     <link rel="apple-touch-icon" href="/icon-192.png" />
+
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        overflow: hidden;                 /* blochează bounce-ul elastic de pe iOS */
+        position: fixed;                  /* fixează tot documentul, ca o aplicație nativă */
+        width: 100%;
+        overscroll-behavior: none;        /* fără efect de "pull" */
+        background: #0B0B0F;
+        -webkit-tap-highlight-color: transparent;
+      }
+      #root {
+        height: 100%;
+        overflow: hidden;
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>

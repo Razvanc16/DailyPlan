@@ -49,6 +49,43 @@ ${habits || "(niciun obicei urmărit încă)"}
   }
 });
 
+
+app.post("/api/questions", async (req, res) => {
+  const { profile, habits } = req.body;
+  const prompt = `Pe baza profilului de mai jos, generează 5 întrebări scurte de "check-in de dimineață" care să te ajute să înțelegi cum e userul azi și ce vrea să facă, ca să-i poți construi un orar personalizat.
+
+PROFILUL USERULUI:
+${profile || "(niciun profil setat)"}
+
+OBICEIURILE URMĂRITE:
+${habits || "(niciunul)"}
+
+Pentru fiecare întrebare, oferă 3-4 variante scurte de răspuns (userul poate alege una sau scrie propriul răspuns).
+Întrebările să fie relevante pentru obiectivele lui (somn, sport, muncă, energie, stare, etc.).
+
+Răspunde DOAR cu un array JSON valid, fără text în plus, fără markdown. Format exact:
+[{"q":"Cum te simți azi?","options":["Energic","Obosit","Ok","Stresat"]}]`;
+
+  try {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-6",
+        max_tokens: 1024,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
+    const data = await response.json();
+    if (data.error) return res.status(500).json({ error: "Eroare API." });
+    let text = data.content.map(i => i.text || "").join("").trim();
+    text = text.replace(/```json/g, "").replace(/```/g, "").trim();
+    res.json({ questions: JSON.parse(text) });
+  } catch (err) {
+    res.status(500).json({ error: "Nu am putut genera întrebările." });
+  }
+});
+
 app.post("/api/generate-schedule", async (req, res) => {
   const { profile, tasks, habits } = req.body;
   if (!tasks || !tasks.trim()) return res.status(400).json({ error: "Niciun task furnizat." });
