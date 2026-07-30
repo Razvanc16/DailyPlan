@@ -80,9 +80,21 @@ Răspunde DOAR cu un array JSON valid, fără text în plus, fără markdown. Fo
     if (data.error) return res.status(500).json({ error: "Eroare API." });
     let text = data.content.map(i => i.text || "").join("").trim();
     text = text.replace(/```json/g, "").replace(/```/g, "").trim();
-    res.json({ questions: JSON.parse(text) });
+    // extrage doar array-ul JSON, în caz că AI-ul a pus text în jur
+    const start = text.indexOf("[");
+    const end = text.lastIndexOf("]");
+    if (start !== -1 && end !== -1) text = text.slice(start, end + 1);
+    const questions = JSON.parse(text);
+    res.json({ questions });
   } catch (err) {
-    res.status(500).json({ error: "Nu am putut genera întrebările." });
+    // fallback: întrebări generice, ca aplicația să nu se blocheze
+    res.json({ questions: [
+      { q: "Cum te simți azi?", options: ["Energic", "Obosit", "Ok", "Stresat"] },
+      { q: "Cât timp vrei să dedici azi lucrului la aplicații?", options: ["1-2 ore", "3-4 ore", "Cât pot", "Azi mă odihnesc"] },
+      { q: "Ai chef de mișcare azi?", options: ["Da, baschet", "Da, banda", "Poate mai târziu", "Nu azi"] },
+      { q: "La ce oră vrei să începi ziua efectiv?", options: ["Acum", "Într-o oră", "După-amiază", "Nu știu"] },
+      { q: "Care e prioritatea ta principală azi?", options: ["Aplicațiile", "Odihna", "Sport", "Altceva"] },
+    ]});
   }
 });
 

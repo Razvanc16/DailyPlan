@@ -187,7 +187,7 @@ export default function App() {
       `}</style>
 
       {/* HEADER — cu safe-area pentru notch/Dynamic Island */}
-      <div style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 20px)", padding: "20px 20px 14px", paddingTop: "max(env(safe-area-inset-top), 20px)", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+      <div style={{ padding: "20px 20px 14px", paddingTop: "calc(env(safe-area-inset-top, 0px) + 28px)", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
           <div>
             <div style={{ fontSize: 24, fontWeight: 900, letterSpacing: "-0.5px" }}>
