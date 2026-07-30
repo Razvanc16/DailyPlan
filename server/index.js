@@ -1,6 +1,11 @@
 import express from "express";
 import cors from "cors";
 import "dotenv/config";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(cors());
@@ -141,6 +146,14 @@ type ∈ work, break, exercise, meal, personal, free, sleep.`;
   } catch (err) {
     res.status(500).json({ error: "Nu am putut genera orarul." });
   }
+});
+
+// Servește frontend-ul construit (Vite build din ../dist)
+const distPath = path.join(__dirname, "..", "dist");
+app.use(express.static(distPath));
+// Orice rută care nu e /api trimite index.html (pentru SPA)
+app.get(/^(?!\/api).*/, (req, res) => {
+  res.sendFile(path.join(distPath, "index.html"));
 });
 
 const PORT = process.env.PORT || 3001;
