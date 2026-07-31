@@ -200,40 +200,46 @@ function Dashboard({ token, user, initialData, onLogout }) {
   const [openHistoryDay, setOpenHistoryDay] = useState(null);
   const scheduleRefs = useRef({});
   const capturingRef = useRef(false);
+  const [previewImage, setPreviewImage] = useState(null); // { url, fileName }
 
-  // Captează cardul de orar ca imagine și îl salvează/trimite spre partajare pe telefon.
+  // Captează cardul de orar ca imagine. Încearcă întâi share nativ (poate merge
+  // direct spre "Salvează în Poze" pe telefon); dacă share-ul nu e disponibil sau
+  // eșuează silențios (frecvent pe iOS, unde gestul utilizatorului expiră în
+  // timpul randării canvas-ului), arătăm imaginea într-un preview pe care
+  // utilizatorul o poate ține apăsat și salva direct în Poze — asta ocolește
+  // problema unui download simplu, care pe iOS ajunge în Files, nu în Poze.
   const saveScheduleImage = async (nodeKey) => {
     const node = scheduleRefs.current[nodeKey];
     if (!node || capturingRef.current) return;
     capturingRef.current = true;
     try {
       const canvas = await html2canvas(node, { backgroundColor: "#14141a", scale: 2, useCORS: true });
-      await new Promise((resolve) => {
-        canvas.toBlob(async (blob) => {
-          if (!blob) { resolve(); return; }
-          const fileName = `dailyplan-orar-${day}.png`;
-          const file = typeof File !== "undefined" ? new File([blob], fileName, { type: "image/png" }) : null;
-          if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
-            try {
-              await navigator.share({ files: [file], title: "Orarul zilei — DailyPlan" });
-              resolve();
-              return;
-            } catch {
-              // userul a anulat sharing-ul sau a eșuat — continuăm cu descărcare directă
-            }
+      const fileName = `dailyplan-orar-${day}.png`;
+      canvas.toBlob(async (blob) => {
+        if (!blob) { capturingRef.current = false; return; }
+        const file = typeof File !== "undefined" ? new File([blob], fileName, { type: "image/png" }) : null;
+        let shared = false;
+        if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
+          try {
+            await navigator.share({ files: [file], title: "Orarul zilei — DailyPlan" });
+            shared = true;
+          } catch (err) {
+            shared = err?.name === "AbortError"; // userul a anulat explicit — nu mai arătăm fallback
           }
+        }
+        if (!shared) {
           const url = URL.createObjectURL(blob);
-          const a = document.createElement("a");
-          a.href = url; a.download = fileName;
-          document.body.appendChild(a); a.click(); document.body.removeChild(a);
-          URL.revokeObjectURL(url);
-          resolve();
-        }, "image/png");
-      });
+          setPreviewImage({ url, fileName });
+        }
+        capturingRef.current = false;
+      }, "image/png");
     } catch {
-      // capturarea a eșuat — nu blocăm UI-ul pentru o funcție secundară
+      capturingRef.current = false;
     }
-    capturingRef.current = false;
+  };
+  const closePreviewImage = () => {
+    if (previewImage) URL.revokeObjectURL(previewImage.url);
+    setPreviewImage(null);
   };
 
   // Trimite modificările către server (per cont) — debounce pentru câmpuri scrise continuu (profilul).
@@ -722,6 +728,22 @@ function Dashboard({ token, user, initialData, onLogout }) {
             <div style={{ display: "flex", gap: 10 }}>
               <button onClick={() => setShowResetConfirm(false)} style={{ flex: 1, padding: "11px", borderRadius: 12, border: "1px solid rgba(255,255,255,0.15)", background: "transparent", color: "rgba(255,255,255,0.7)", fontWeight: 700, cursor: "pointer", fontSize: 14 }}>Anulează</button>
               <button onClick={confirmResetCheckin} style={{ flex: 1, padding: "11px", borderRadius: 12, border: "none", background: `linear-gradient(135deg,${ACCENT},${ACCENT2})`, color: "#fff", fontWeight: 800, cursor: "pointer", fontSize: 14 }}>Resetează</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Preview imagine orar — ține apăsat pe imagine ca s-o salvezi direct în Poze */}
+      {previewImage && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.88)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", zIndex: 1200, padding: 20 }} onClick={closePreviewImage}>
+          <div onClick={e => e.stopPropagation()} style={{ maxWidth: 420, width: "100%" }}>
+            <img src={previewImage.url} alt="Orarul zilei" style={{ width: "100%", borderRadius: 14, display: "block", marginBottom: 14 }} />
+            <div style={{ fontSize: 13, color: "rgba(255,255,255,0.7)", textAlign: "center", marginBottom: 14, lineHeight: 1.5 }}>
+              Ține apăsat pe imagine și alege <strong>„Adaugă la Poze"</strong> ca s-o salvezi în galerie.
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <a href={previewImage.url} download={previewImage.fileName} style={{ flex: 1, textAlign: "center", padding: "12px", borderRadius: 12, border: "1px solid rgba(255,255,255,0.2)", color: "#fff", fontSize: 13, fontWeight: 700, textDecoration: "none" }}>⬇ Descarcă</a>
+              <button onClick={closePreviewImage} style={{ flex: 1, padding: "12px", borderRadius: 12, border: "none", background: `linear-gradient(135deg,${ACCENT},${ACCENT2})`, color: "#fff", fontWeight: 800, fontSize: 13, cursor: "pointer" }}>Închide</button>
             </div>
           </div>
         </div>
