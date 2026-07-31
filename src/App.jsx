@@ -591,19 +591,28 @@ export default function App() {
       setBootError(false);
       if (!token) { setBooting(false); return; }
       setBooting(true);
-      try {
-        const res = await fetch(`${API_URL}/api/me`, { headers: authHeaders(token) });
-        if (res.status === 401) {
-          localStorage.removeItem("dp:token");
-          if (!cancelled) setToken(null);
-        } else if (res.ok) {
-          const data = await res.json();
-          if (!cancelled) { setUser(data.user); setInitialData(data.data); }
-        } else if (!cancelled) {
-          setBootError(true);
+      // Reîncercăm de câteva ori la eșec de rețea (frecvent pe mobil) înainte să
+      // arătăm o eroare — un token valid nu trebuie tratat ca "delogat" doar
+      // pentru că a picat un request pe 4G.
+      const attempts = 3;
+      for (let i = 0; i < attempts && !cancelled; i++) {
+        try {
+          const res = await fetch(`${API_URL}/api/me`, { headers: authHeaders(token) });
+          if (res.status === 401) {
+            localStorage.removeItem("dp:token");
+            if (!cancelled) setToken(null);
+            break;
+          } else if (res.ok) {
+            const data = await res.json();
+            if (!cancelled) { setUser(data.user); setInitialData(data.data); }
+            break;
+          } else if (i === attempts - 1 && !cancelled) {
+            setBootError(true);
+          }
+        } catch {
+          if (i === attempts - 1 && !cancelled) setBootError(true);
         }
-      } catch {
-        if (!cancelled) setBootError(true);
+        if (i < attempts - 1) await new Promise(r => setTimeout(r, 600 * (i + 1)));
       }
       if (!cancelled) setBooting(false);
     })();
