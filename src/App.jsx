@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import html2canvas from "html2canvas";
 
 const ACCENT = "#FF3366";
 const ACCENT2 = "#B44FFF";
@@ -24,6 +25,38 @@ const formatDayLabel = (dateStr) => {
 
 const typeColors = { work: "#FF3366", break: "#00E5FF", exercise: "#00C864", meal: "#FFB800", personal: "#B44FFF", free: "rgba(255,255,255,0.3)", sleep: "#6E7BFF" };
 const typeLabels = { work: "Muncă", break: "Pauză", exercise: "Sport", meal: "Masă", personal: "Personal", free: "Liber", sleep: "Somn" };
+
+// Randare text ușor "îmbogățit" — transformă **bold**, liste cu "- " și "---"
+// (pe care modelul le mai scapă uneori) în elemente vizuale reale, în loc să
+// arate ca text brut de markdown nerandat.
+function renderInline(text, keyPrefix) {
+  const parts = text.split(/(\*\*[^*]+\*\*)/g).filter(p => p !== "");
+  return parts.map((part, idx) => {
+    const boldMatch = part.match(/^\*\*([^*]+)\*\*$/);
+    if (boldMatch) return <strong key={`${keyPrefix}-b${idx}`}>{boldMatch[1]}</strong>;
+    return <span key={`${keyPrefix}-t${idx}`}>{part}</span>;
+  });
+}
+function renderRichText(content) {
+  const lines = String(content ?? "").split("\n");
+  return lines.map((line, li) => {
+    const trimmed = line.trim();
+    if (trimmed === "---" || trimmed === "___" || trimmed === "***") {
+      return <div key={`hr-${li}`} style={{ height: 1, background: "rgba(255,255,255,0.15)", margin: "8px 0" }} />;
+    }
+    const bulletMatch = line.match(/^\s*[-•]\s+(.*)$/);
+    if (bulletMatch) {
+      return (
+        <div key={`li-${li}`} style={{ display: "flex", gap: 8, marginTop: 2 }}>
+          <span style={{ opacity: 0.5 }}>•</span>
+          <span>{renderInline(bulletMatch[1], `li-${li}`)}</span>
+        </div>
+      );
+    }
+    if (trimmed === "") return <div key={`sp-${li}`} style={{ height: 6 }} />;
+    return <div key={`ln-${li}`}>{renderInline(line, `ln-${li}`)}</div>;
+  });
+}
 
 const authHeaders = (token) => (token ? { Authorization: `Bearer ${token}` } : {});
 
@@ -165,6 +198,43 @@ function Dashboard({ token, user, initialData, onLogout }) {
   const fileInputRef = useRef(null);
   const saveTimer = useRef(null);
   const [openHistoryDay, setOpenHistoryDay] = useState(null);
+  const scheduleRefs = useRef({});
+  const capturingRef = useRef(false);
+
+  // Captează cardul de orar ca imagine și îl salvează/trimite spre partajare pe telefon.
+  const saveScheduleImage = async (nodeKey) => {
+    const node = scheduleRefs.current[nodeKey];
+    if (!node || capturingRef.current) return;
+    capturingRef.current = true;
+    try {
+      const canvas = await html2canvas(node, { backgroundColor: "#14141a", scale: 2, useCORS: true });
+      await new Promise((resolve) => {
+        canvas.toBlob(async (blob) => {
+          if (!blob) { resolve(); return; }
+          const fileName = `dailyplan-orar-${day}.png`;
+          const file = typeof File !== "undefined" ? new File([blob], fileName, { type: "image/png" }) : null;
+          if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
+            try {
+              await navigator.share({ files: [file], title: "Orarul zilei — DailyPlan" });
+              resolve();
+              return;
+            } catch {
+              // userul a anulat sharing-ul sau a eșuat — continuăm cu descărcare directă
+            }
+          }
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url; a.download = fileName;
+          document.body.appendChild(a); a.click(); document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+          resolve();
+        }, "image/png");
+      });
+    } catch {
+      // capturarea a eșuat — nu blocăm UI-ul pentru o funcție secundară
+    }
+    capturingRef.current = false;
+  };
 
   // Trimite modificările către server (per cont) — debounce pentru câmpuri scrise continuu (profilul).
   const pushData = useCallback((partial, { debounce } = {}) => {
@@ -331,7 +401,7 @@ function Dashboard({ token, user, initialData, onLogout }) {
       });
       const data = await res.json();
       if (data.schedule) {
-        saveMessages([...messages, { role: "assistant", content: "Iată orarul tău actualizat:", schedule: data.schedule }]);
+        saveMessages([...messages, { role: "assistant", content: hasSchedule ? "Iată orarul tău actualizat:" : "Iată orarul tău de azi:", schedule: data.schedule }]);
       } else throw new Error(data.error);
     } catch (err) {
       saveMessages([...messages, { role: "assistant", content: err?.message || "N-am putut genera orarul. Încearcă din nou." }]);
@@ -366,48 +436,63 @@ function Dashboard({ token, user, initialData, onLogout }) {
   const hasSchedule = messages.some(m => m.schedule);
 
   // Randare comună pentru un mesaj din chat — folosită atât în tab-ul „Azi", cât și în „Istoric".
-  const renderMessageBubble = (m, i, { interactive = false, total = 0 } = {}) => (
-    <div key={i} style={{ marginBottom: 12, animation: "fadeUp 0.3s ease-out" }}>
-      {m.schedule ? (
-        <div>
-          <div style={{ fontSize: 14, color: "rgba(255,255,255,0.6)", marginBottom: 10 }}>{m.content}</div>
-          <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 14, padding: "14px" }}>
-            {m.schedule.map((s, j) => {
-              const color = typeColors[s.type] || typeColors.free;
-              return (
-                <div key={j} style={{ display: "flex", gap: 12, marginBottom: j < m.schedule.length - 1 ? 8 : 0 }}>
-                  <div style={{ minWidth: 78, textAlign: "right" }}>
-                    <div style={{ fontSize: 13, fontWeight: 700 }}>{s.start}</div>
-                    <div style={{ fontSize: 10, color: "rgba(255,255,255,0.35)" }}>{s.end}</div>
-                  </div>
-                  <div style={{ width: 3, borderRadius: 3, background: color }} />
-                  <div style={{ flex: 1, padding: "9px 13px", borderRadius: 10, background: `${color}12`, border: `1px solid ${color}30` }}>
-                    <div style={{ fontSize: 14, fontWeight: 600 }}>{s.title}</div>
-                    <div style={{ fontSize: 10, color, textTransform: "uppercase", letterSpacing: "0.05em", marginTop: 2 }}>{typeLabels[s.type] || s.type}</div>
-                  </div>
+  const renderMessageBubble = (m, i, { interactive = false, total = 0, refNamespace = "today", dateLabel } = {}) => {
+    const scheduleKey = `${refNamespace}-${i}`;
+    return (
+      <div key={i} style={{ marginBottom: 12, animation: "fadeUp 0.3s ease-out" }}>
+        {m.schedule ? (
+          <div>
+            <div style={{ fontSize: 14, color: "rgba(255,255,255,0.6)", marginBottom: 10 }}>{renderRichText(m.content)}</div>
+            <div
+              ref={el => { if (el) scheduleRefs.current[scheduleKey] = el; }}
+              style={{ background: "#14141a", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 14, padding: "18px" }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+                <div style={{ fontSize: 14, fontWeight: 900 }}>
+                  Daily<span style={{ background: `linear-gradient(135deg,${ACCENT},${ACCENT2})`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>Plan</span>
                 </div>
-              );
-            })}
-          </div>
-        </div>
-      ) : (
-        <div style={{ display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start" }}>
-          <div style={{ maxWidth: "82%", padding: "12px 16px", borderRadius: 16, fontSize: 14, lineHeight: 1.55, whiteSpace: "pre-wrap",
-            background: m.role === "user" ? `linear-gradient(135deg,${ACCENT},${ACCENT2})` : "rgba(255,255,255,0.06)",
-            border: m.role === "user" ? "none" : "1px solid rgba(255,255,255,0.1)" }}>{m.content}</div>
-        </div>
-      )}
-      {interactive && m.role === "assistant" && m.options?.length > 0 && i === total - 1 && !loading && (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10 }}>
-          {m.options.map((opt, k) => (
-            <button key={k} onClick={() => answerChatOption(opt)} style={{ padding: "9px 14px", borderRadius: 20, cursor: "pointer", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.15)", color: "#fff", fontSize: 13, fontFamily: "'Inter', sans-serif" }}>
-              {opt}
+                <div style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", fontWeight: 700 }}>{dateLabel || formatDayLabel(day)}</div>
+              </div>
+              {m.schedule.map((s, j) => {
+                const color = typeColors[s.type] || typeColors.free;
+                return (
+                  <div key={j} style={{ display: "flex", gap: 12, marginBottom: j < m.schedule.length - 1 ? 8 : 0 }}>
+                    <div style={{ minWidth: 78, textAlign: "right" }}>
+                      <div style={{ fontSize: 13, fontWeight: 700 }}>{s.start}</div>
+                      <div style={{ fontSize: 10, color: "rgba(255,255,255,0.35)" }}>{s.end}</div>
+                    </div>
+                    <div style={{ width: 3, borderRadius: 3, background: color }} />
+                    <div style={{ flex: 1, padding: "9px 13px", borderRadius: 10, background: `${color}12`, border: `1px solid ${color}30` }}>
+                      <div style={{ fontSize: 14, fontWeight: 600 }}>{s.title}</div>
+                      <div style={{ fontSize: 10, color, textTransform: "uppercase", letterSpacing: "0.05em", marginTop: 2 }}>{typeLabels[s.type] || s.type}</div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <button onClick={() => saveScheduleImage(scheduleKey)} style={{ marginTop: 10, padding: "9px 14px", borderRadius: 20, cursor: "pointer", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.15)", color: "rgba(255,255,255,0.7)", fontSize: 12.5, fontWeight: 700, fontFamily: "'Inter', sans-serif" }}>
+              📷 Salvează ca poză
             </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
+          </div>
+        ) : (
+          <div style={{ display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start" }}>
+            <div style={{ maxWidth: "82%", padding: "12px 16px", borderRadius: 16, fontSize: 14, lineHeight: 1.55,
+              background: m.role === "user" ? `linear-gradient(135deg,${ACCENT},${ACCENT2})` : "rgba(255,255,255,0.06)",
+              border: m.role === "user" ? "none" : "1px solid rgba(255,255,255,0.1)" }}>{renderRichText(m.content)}</div>
+          </div>
+        )}
+        {interactive && m.role === "assistant" && m.options?.length > 0 && i === total - 1 && !loading && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10 }}>
+            {m.options.map((opt, k) => (
+              <button key={k} onClick={() => answerChatOption(opt)} style={{ padding: "9px 14px", borderRadius: 20, cursor: "pointer", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.15)", color: "#fff", fontSize: 13, fontFamily: "'Inter', sans-serif" }}>
+                {opt}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div style={{ height: "100%", background: "#0B0B0F", color: "#fff", fontFamily: "'Inter', sans-serif", display: "flex", flexDirection: "column", overflow: "hidden" }}>
@@ -455,7 +540,7 @@ function Dashboard({ token, user, initialData, onLogout }) {
               </div>
             )}
 
-            {messages.map((m, i) => renderMessageBubble(m, i, { interactive: !inCheckin, total: messages.length }))}
+            {messages.map((m, i) => renderMessageBubble(m, i, { interactive: !inCheckin, total: messages.length, refNamespace: "today", dateLabel: formatDayLabel(day) }))}
 
             {lastError && !inCheckin && (
               <div style={{ display: "flex", justifyContent: "flex-start", marginBottom: 12 }}>
@@ -571,7 +656,7 @@ function Dashboard({ token, user, initialData, onLogout }) {
                     </button>
                     {isOpen && (
                       <div style={{ padding: 16, background: "rgba(255,255,255,0.015)" }}>
-                        {dayMsgs.map((m, i) => renderMessageBubble(m, i, { interactive: false }))}
+                        {dayMsgs.map((m, i) => renderMessageBubble(m, i, { interactive: false, refNamespace: d, dateLabel: formatDayLabel(d) }))}
                       </div>
                     )}
                   </div>
