@@ -74,15 +74,30 @@ let sessions = JSON.parse(await fs.readFile(SESSIONS_FILE, "utf8"));
 async function persistUsers() { await fs.writeFile(USERS_FILE, JSON.stringify(users, null, 2)); }
 async function persistSessions() { await fs.writeFile(SESSIONS_FILE, JSON.stringify(sessions, null, 2)); }
 
+const todayKeyServer = () => new Date().toISOString().slice(0, 10);
+
 function emptyStore() {
-  return { profile: "", habits: [], checks: {}, messages: [], checkinDoneDate: null };
+  return { profile: "", habits: [], checks: {}, conversations: {}, checkinDoneDate: null };
 }
 async function readStore(userId) {
+  let data;
   try {
-    return JSON.parse(await fs.readFile(path.join(STORE_DIR, `${userId}.json`), "utf8"));
+    data = JSON.parse(await fs.readFile(path.join(STORE_DIR, `${userId}.json`), "utf8"));
   } catch {
     return emptyStore();
   }
+  // Compat cu conturi create înainte de istoricul pe zile (aveau `messages: []` plat).
+  if (!data.conversations || typeof data.conversations !== "object") {
+    data.conversations = Array.isArray(data.messages) && data.messages.length
+      ? { [todayKeyServer()]: data.messages }
+      : {};
+  }
+  delete data.messages;
+  if (typeof data.profile !== "string") data.profile = "";
+  if (!Array.isArray(data.habits)) data.habits = [];
+  if (!data.checks || typeof data.checks !== "object") data.checks = {};
+  if (!("checkinDoneDate" in data)) data.checkinDoneDate = null;
+  return data;
 }
 async function writeStore(userId, data) {
   await fs.writeFile(path.join(STORE_DIR, `${userId}.json`), JSON.stringify(data, null, 2));
@@ -129,7 +144,7 @@ app.post("/api/auth/register", authLimiter, async (req, res) => {
     if (typeof migrate.profile === "string") store.profile = migrate.profile;
     if (Array.isArray(migrate.habits)) store.habits = migrate.habits;
     if (migrate.checks && typeof migrate.checks === "object") store.checks = migrate.checks;
-    if (Array.isArray(migrate.messages)) store.messages = migrate.messages;
+    if (migrate.conversations && typeof migrate.conversations === "object") store.conversations = migrate.conversations;
   }
   await writeStore(id, store);
 
@@ -171,7 +186,7 @@ app.put("/api/me/data", requireAuth, async (req, res) => {
   if (typeof patch.profile === "string") next.profile = patch.profile;
   if (Array.isArray(patch.habits)) next.habits = patch.habits;
   if (patch.checks && typeof patch.checks === "object") next.checks = patch.checks;
-  if (Array.isArray(patch.messages)) next.messages = patch.messages;
+  if (patch.conversations && typeof patch.conversations === "object") next.conversations = patch.conversations;
   if ("checkinDoneDate" in patch) next.checkinDoneDate = patch.checkinDoneDate;
   await writeStore(req.userId, next);
   res.json({ ok: true });
@@ -196,6 +211,12 @@ Limite importante pe care le respecți mereu:
 
 Ține cont de obiectivele și contextul userului furnizate mai jos și fii cât mai personalizat și practic.`;
 
+const CHAT_FORMAT_INSTRUCTION = `
+
+Format de răspuns — foarte important: răspunde DOAR cu un obiect JSON valid, fără text în plus, fără markdown, exact așa:
+{"reply":"mesajul tău către user, în limba română, cu tot cu emoji dacă vrei","options":["opțiune scurtă 1","opțiune scurtă 2"]}
+Pune în "options" 2-4 variante scurte de răspuns DOAR dacă mesajul tău din "reply" se termină cu o întrebare care are răspunsuri naturale de tip alegere multiplă (ex: da/nu, stări, preferințe, cantități aproximative). Dacă întrebarea e deschisă, dacă nu pui nicio întrebare, sau dacă răspunsurile posibile sunt prea variate ca să le reduci la 2-4 opțiuni, pune "options": [].`;
+
 app.post("/api/chat", requireAuth, chatLimiter, async (req, res) => {
   const { messages, profile, habits } = req.body;
   const context = `
@@ -212,7 +233,7 @@ ${habits || "(niciun obicei urmărit încă)"}
       body: JSON.stringify({
         model: "claude-sonnet-4-6",
         max_tokens: 1024,
-        system: SYSTEM_PROMPT + "\n\n" + context,
+        system: SYSTEM_PROMPT + "\n\n" + context + CHAT_FORMAT_INSTRUCTION,
         messages: messages,
       }),
     });
@@ -222,7 +243,23 @@ ${habits || "(niciun obicei urmărit încă)"}
       return res.status(500).json({ error: "Eroare API: " + (data.error.message || "necunoscută") });
     }
     const text = data.content.map(i => i.text || "").join("").trim();
-    res.json({ reply: text });
+
+    // Modelul ar trebui să răspundă JSON ({reply, options}); dacă nu respectă
+    // formatul (se mai întâmplă), folosim tot textul ca mesaj, fără opțiuni.
+    let reply = text, options = [];
+    try {
+      let jsonText = text.replace(/```json/g, "").replace(/```/g, "").trim();
+      const start = jsonText.indexOf("{");
+      const end = jsonText.lastIndexOf("}");
+      if (start !== -1 && end !== -1) jsonText = jsonText.slice(start, end + 1);
+      const parsed = JSON.parse(jsonText);
+      if (typeof parsed.reply === "string") reply = parsed.reply;
+      if (Array.isArray(parsed.options)) options = parsed.options.filter(o => typeof o === "string").slice(0, 4);
+    } catch {
+      // fallback: text brut, fără opțiuni
+    }
+
+    res.json({ reply, options });
   } catch (err) {
     console.error("Eroare server (/api/chat):", err);
     res.status(500).json({ error: "Nu am putut răspunde: " + err.message });

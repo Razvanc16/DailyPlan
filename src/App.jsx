@@ -14,6 +14,13 @@ const last7 = () => {
   for (let i = 6; i >= 0; i--) { const d = new Date(); d.setDate(d.getDate() - i); days.push(d.toISOString().slice(0, 10)); }
   return days;
 };
+const yesterdayKey = () => { const d = new Date(); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10); };
+const formatDayLabel = (dateStr) => {
+  if (dateStr === todayKey()) return "Azi";
+  if (dateStr === yesterdayKey()) return "Ieri";
+  const d = new Date(dateStr + "T00:00:00");
+  return d.toLocaleDateString("ro-RO", { day: "numeric", month: "long", year: "numeric" });
+};
 
 const typeColors = { work: "#FF3366", break: "#00E5FF", exercise: "#00C864", meal: "#FFB800", personal: "#B44FFF", free: "rgba(255,255,255,0.3)", sleep: "#6E7BFF" };
 const typeLabels = { work: "Muncă", break: "Pauză", exercise: "Sport", meal: "Masă", personal: "Personal", free: "Liber", sleep: "Somn" };
@@ -36,9 +43,9 @@ function readLegacyData() {
     const profile = localStorage.getItem("dp:profile") || undefined;
     const habits = JSON.parse(localStorage.getItem("dp:habits") || "null") || undefined;
     const checks = JSON.parse(localStorage.getItem("dp:checks") || "null") || undefined;
-    const messages = JSON.parse(localStorage.getItem("dp:messages") || "null") || undefined;
-    if (!profile && !habits && !checks && !messages) return null;
-    return { profile, habits, checks, messages };
+    const legacyMessages = JSON.parse(localStorage.getItem("dp:messages") || "null") || undefined;
+    if (!profile && !habits && !checks && !legacyMessages) return null;
+    return { profile, habits, checks, conversations: legacyMessages ? { [todayKey()]: legacyMessages } : undefined };
   } catch {
     return null;
   }
@@ -137,14 +144,19 @@ function Dashboard({ token, user, initialData, onLogout }) {
   const [deletedHabit, setDeletedHabit] = useState(null);
   const undoTimer = useRef(null);
 
-  const [messages, setMessages] = useState(initialData?.messages || []);
+  // Conversațiile sunt ținute pe zile: { "2026-08-01": [...mesaje], ... }.
+  // Ziua curentă pornește mereu goală — asta rezolvă resetarea automată zilnică.
+  const [conversations, setConversations] = useState(initialData?.conversations || {});
+  const day = todayKey();
+  const messages = conversations[day] || [];
+
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [questions, setQuestions] = useState([]);
   const [qIndex, setQIndex] = useState(0);
   const [answers, setAnswers] = useState([]);
   const [checkinDoneDate, setCheckinDoneDate] = useState(initialData?.checkinDoneDate || null);
-  const checkinDone = checkinDoneDate === todayKey();
+  const checkinDone = checkinDoneDate === day;
   const [genLoading, setGenLoading] = useState(false);
   const chatEndRef = useRef(null);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
@@ -152,6 +164,7 @@ function Dashboard({ token, user, initialData, onLogout }) {
   const [importStatus, setImportStatus] = useState(null);
   const fileInputRef = useRef(null);
   const saveTimer = useRef(null);
+  const [openHistoryDay, setOpenHistoryDay] = useState(null);
 
   // Trimite modificările către server (per cont) — debounce pentru câmpuri scrise continuu (profilul).
   const pushData = useCallback((partial, { debounce } = {}) => {
@@ -175,14 +188,15 @@ function Dashboard({ token, user, initialData, onLogout }) {
   const saveProfile = (v) => { setProfile(v); pushData({ profile: v }, { debounce: true }); };
   const saveHabits = (h) => { setHabits(h); pushData({ habits: h }); };
   const saveChecks = (c) => { setChecks(c); pushData({ checks: c }); };
-  const saveMessages = (m) => { setMessages(m); pushData({ messages: m }); };
+  const saveConversations = (convos) => { setConversations(convos); pushData({ conversations: convos }); };
+  const saveMessages = (msgsForToday) => saveConversations({ ...conversations, [day]: msgsForToday });
 
   const exportBackup = () => {
-    const payload = { profile, habits, checks, messages, exportedAt: new Date().toISOString() };
+    const payload = { profile, habits, checks, conversations, exportedAt: new Date().toISOString() };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = url; a.download = `dailyplan-backup-${todayKey()}.json`;
+    a.href = url; a.download = `dailyplan-backup-${day}.json`;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     URL.revokeObjectURL(url);
     setImportStatus({ ok: true, msg: "Backup descărcat." });
@@ -199,7 +213,8 @@ function Dashboard({ token, user, initialData, onLogout }) {
         if (typeof data.profile === "string") saveProfile(data.profile);
         if (Array.isArray(data.habits)) saveHabits(data.habits);
         if (data.checks && typeof data.checks === "object") saveChecks(data.checks);
-        if (Array.isArray(data.messages)) saveMessages(data.messages);
+        if (data.conversations && typeof data.conversations === "object") saveConversations(data.conversations);
+        else if (Array.isArray(data.messages)) saveConversations({ ...conversations, [day]: data.messages }); // backup vechi, dinainte de istoric pe zile
         setImportStatus({ ok: true, msg: "Backup restaurat cu succes." });
       } catch {
         setImportStatus({ ok: false, msg: "Fișierul nu e un backup valid DailyPlan." });
@@ -211,7 +226,6 @@ function Dashboard({ token, user, initialData, onLogout }) {
   };
 
   const toggleCheck = (id) => {
-    const day = todayKey();
     saveChecks({ ...checks, [day]: { ...(checks[day] || {}), [id]: !(checks[day]?.[id]) } });
   };
   const addHabit = () => { if (!newHabit.trim()) return; saveHabits([...habits, { id: "h" + Date.now(), name: newHabit.trim(), icon: "⭐" }]); setNewHabit(""); };
@@ -259,9 +273,8 @@ function Dashboard({ token, user, initialData, onLogout }) {
       setQIndex(qIndex + 1);
     } else {
       setQuestions([]);
-      const today = todayKey();
-      setCheckinDoneDate(today);
-      pushData({ checkinDoneDate: today });
+      setCheckinDoneDate(day);
+      pushData({ checkinDoneDate: day });
       const base = [...messages, { role: "assistant", content: q.q }, { role: "user", content: answer }];
       saveMessages([...base, { role: "assistant", content: "Perfect, am tot ce-mi trebuie! 🎯 Acum pot să-ți construiesc orarul zilei — apasă butonul de jos. Sau continuă să vorbim dacă vrei să adaugi ceva." }]);
     }
@@ -278,7 +291,7 @@ function Dashboard({ token, user, initialData, onLogout }) {
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
-      saveMessages([...newMsgs, { role: "assistant", content: data.reply }]);
+      saveMessages([...newMsgs, { role: "assistant", content: data.reply, options: Array.isArray(data.options) ? data.options : [] }]);
     } catch (err) {
       saveMessages([...newMsgs, { role: "assistant", content: err?.message || "Ceva n-a mers. Verifică conexiunea și încearcă din nou." }]);
       setLastError({ retry: () => postChat(newMsgs) });
@@ -291,6 +304,14 @@ function Dashboard({ token, user, initialData, onLogout }) {
     const newMsgs = [...messages, { role: "user", content: input.trim() }];
     saveMessages(newMsgs); setInput("");
     await postChat(newMsgs);
+  };
+
+  // Click pe o opțiune de răspuns rapid din chat-ul liber (nu din check-in) — echivalent cu a scrie exact acel text.
+  const answerChatOption = (opt) => {
+    if (loading) return;
+    const newMsgs = [...messages, { role: "user", content: opt }];
+    saveMessages(newMsgs);
+    postChat(newMsgs);
   };
 
   const generateSchedule = async () => {
@@ -310,7 +331,7 @@ function Dashboard({ token, user, initialData, onLogout }) {
       });
       const data = await res.json();
       if (data.schedule) {
-        saveMessages([...messages, { role: "assistant", content: "Iată orarul tău de azi:", schedule: data.schedule }]);
+        saveMessages([...messages, { role: "assistant", content: "Iată orarul tău actualizat:", schedule: data.schedule }]);
       } else throw new Error(data.error);
     } catch (err) {
       saveMessages([...messages, { role: "assistant", content: err?.message || "N-am putut genera orarul. Încearcă din nou." }]);
@@ -327,7 +348,6 @@ function Dashboard({ token, user, initialData, onLogout }) {
     setShowResetConfirm(false);
   };
 
-  const day = todayKey();
   const todayChecks = checks[day] || {};
   const doneToday = habits.filter(h => todayChecks[h.id]).length;
   const streak = (() => {
@@ -343,6 +363,51 @@ function Dashboard({ token, user, initialData, onLogout }) {
   })();
 
   const inCheckin = questions.length > 0;
+  const hasSchedule = messages.some(m => m.schedule);
+
+  // Randare comună pentru un mesaj din chat — folosită atât în tab-ul „Azi", cât și în „Istoric".
+  const renderMessageBubble = (m, i, { interactive = false, total = 0 } = {}) => (
+    <div key={i} style={{ marginBottom: 12, animation: "fadeUp 0.3s ease-out" }}>
+      {m.schedule ? (
+        <div>
+          <div style={{ fontSize: 14, color: "rgba(255,255,255,0.6)", marginBottom: 10 }}>{m.content}</div>
+          <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 14, padding: "14px" }}>
+            {m.schedule.map((s, j) => {
+              const color = typeColors[s.type] || typeColors.free;
+              return (
+                <div key={j} style={{ display: "flex", gap: 12, marginBottom: j < m.schedule.length - 1 ? 8 : 0 }}>
+                  <div style={{ minWidth: 78, textAlign: "right" }}>
+                    <div style={{ fontSize: 13, fontWeight: 700 }}>{s.start}</div>
+                    <div style={{ fontSize: 10, color: "rgba(255,255,255,0.35)" }}>{s.end}</div>
+                  </div>
+                  <div style={{ width: 3, borderRadius: 3, background: color }} />
+                  <div style={{ flex: 1, padding: "9px 13px", borderRadius: 10, background: `${color}12`, border: `1px solid ${color}30` }}>
+                    <div style={{ fontSize: 14, fontWeight: 600 }}>{s.title}</div>
+                    <div style={{ fontSize: 10, color, textTransform: "uppercase", letterSpacing: "0.05em", marginTop: 2 }}>{typeLabels[s.type] || s.type}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : (
+        <div style={{ display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start" }}>
+          <div style={{ maxWidth: "82%", padding: "12px 16px", borderRadius: 16, fontSize: 14, lineHeight: 1.55, whiteSpace: "pre-wrap",
+            background: m.role === "user" ? `linear-gradient(135deg,${ACCENT},${ACCENT2})` : "rgba(255,255,255,0.06)",
+            border: m.role === "user" ? "none" : "1px solid rgba(255,255,255,0.1)" }}>{m.content}</div>
+        </div>
+      )}
+      {interactive && m.role === "assistant" && m.options?.length > 0 && i === total - 1 && !loading && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10 }}>
+          {m.options.map((opt, k) => (
+            <button key={k} onClick={() => answerChatOption(opt)} style={{ padding: "9px 14px", borderRadius: 20, cursor: "pointer", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.15)", color: "#fff", fontSize: 13, fontFamily: "'Inter', sans-serif" }}>
+              {opt}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <div style={{ height: "100%", background: "#0B0B0F", color: "#fff", fontFamily: "'Inter', sans-serif", display: "flex", flexDirection: "column", overflow: "hidden" }}>
@@ -359,10 +424,10 @@ function Dashboard({ token, user, initialData, onLogout }) {
           </div>
           {streak > 0 && <div style={{ fontSize: 13, fontWeight: 700, color: "#FFB800" }}>🔥 {streak}z</div>}
         </div>
-        <div style={{ display: "flex", gap: 6, marginTop: 14 }}>
-          {[{ id: "chat", label: "💬 Azi" }, { id: "habits", label: "✓ Obiceiuri" }, { id: "profile", label: "👤 Profil" }].map(t => (
+        <div style={{ display: "flex", gap: 5, marginTop: 14, flexWrap: "wrap" }}>
+          {[{ id: "chat", label: "💬 Azi" }, { id: "habits", label: "✓ Obiceiuri" }, { id: "history", label: "📅 Istoric" }, { id: "profile", label: "👤 Profil" }].map(t => (
             <button key={t.id} onClick={() => setView(t.id)} style={{
-              padding: "8px 13px", borderRadius: 12, cursor: "pointer", fontSize: 13, fontWeight: 700,
+              padding: "8px 11px", borderRadius: 12, cursor: "pointer", fontSize: 12.5, fontWeight: 700,
               background: view === t.id ? `${ACCENT}20` : "rgba(255,255,255,0.04)",
               border: `1px solid ${view === t.id ? ACCENT : "rgba(255,255,255,0.1)"}`,
               color: view === t.id ? ACCENT : "rgba(255,255,255,0.5)",
@@ -390,39 +455,7 @@ function Dashboard({ token, user, initialData, onLogout }) {
               </div>
             )}
 
-            {messages.map((m, i) => (
-              <div key={i} style={{ marginBottom: 12, animation: "fadeUp 0.3s ease-out" }}>
-                {m.schedule ? (
-                  <div>
-                    <div style={{ fontSize: 14, color: "rgba(255,255,255,0.6)", marginBottom: 10 }}>{m.content}</div>
-                    <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 14, padding: "14px" }}>
-                      {m.schedule.map((s, j) => {
-                        const color = typeColors[s.type] || typeColors.free;
-                        return (
-                          <div key={j} style={{ display: "flex", gap: 12, marginBottom: j < m.schedule.length - 1 ? 8 : 0 }}>
-                            <div style={{ minWidth: 78, textAlign: "right" }}>
-                              <div style={{ fontSize: 13, fontWeight: 700 }}>{s.start}</div>
-                              <div style={{ fontSize: 10, color: "rgba(255,255,255,0.35)" }}>{s.end}</div>
-                            </div>
-                            <div style={{ width: 3, borderRadius: 3, background: color }} />
-                            <div style={{ flex: 1, padding: "9px 13px", borderRadius: 10, background: `${color}12`, border: `1px solid ${color}30` }}>
-                              <div style={{ fontSize: 14, fontWeight: 600 }}>{s.title}</div>
-                              <div style={{ fontSize: 10, color, textTransform: "uppercase", letterSpacing: "0.05em", marginTop: 2 }}>{typeLabels[s.type] || s.type}</div>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ) : (
-                  <div style={{ display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start" }}>
-                    <div style={{ maxWidth: "82%", padding: "12px 16px", borderRadius: 16, fontSize: 14, lineHeight: 1.55, whiteSpace: "pre-wrap",
-                      background: m.role === "user" ? `linear-gradient(135deg,${ACCENT},${ACCENT2})` : "rgba(255,255,255,0.06)",
-                      border: m.role === "user" ? "none" : "1px solid rgba(255,255,255,0.1)" }}>{m.content}</div>
-                  </div>
-                )}
-              </div>
-            ))}
+            {messages.map((m, i) => renderMessageBubble(m, i, { interactive: !inCheckin, total: messages.length }))}
 
             {lastError && !inCheckin && (
               <div style={{ display: "flex", justifyContent: "flex-start", marginBottom: 12 }}>
@@ -454,10 +487,11 @@ function Dashboard({ token, user, initialData, onLogout }) {
             <div ref={chatEndRef} />
           </div>
 
-          {checkinDone && !messages.some(m => m.schedule) && (
+          {/* Generare orar — vizibil permanent, poate fi apăsat oricând ca să regenereze cu info actualizate */}
+          {(checkinDone || messages.length > 0) && !inCheckin && (
             <div style={{ padding: "10px 16px 0" }}>
               <button onClick={generateSchedule} disabled={genLoading} style={{ width: "100%", padding: "14px", borderRadius: 14, border: "none", background: genLoading ? "rgba(255,51,102,0.4)" : `linear-gradient(135deg,${ACCENT},${ACCENT2})`, color: "#fff", fontSize: 15, fontWeight: 800, cursor: "pointer" }}>
-                {genLoading ? "Se construiește orarul..." : "✨ Generează orarul zilei"}
+                {genLoading ? "Se construiește orarul..." : hasSchedule ? "🔄 Actualizează orarul zilei" : "✨ Generează orarul zilei"}
               </button>
             </div>
           )}
@@ -509,6 +543,41 @@ function Dashboard({ token, user, initialData, onLogout }) {
               style={{ flex: 1, padding: "12px 14px", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, color: "#fff", fontSize: 14, outline: "none", fontFamily: "'Inter', sans-serif" }} />
             <button onClick={addHabit} style={{ padding: "0 18px", borderRadius: 12, border: "none", background: `${ACCENT}25`, color: ACCENT, fontSize: 20, fontWeight: 700, cursor: "pointer" }}>+</button>
           </div>
+        </div>
+      )}
+
+      {/* ISTORIC — discuțiile din toate zilele */}
+      {view === "history" && (
+        <div className="dp-scroll" style={{ flex: 1, overflowY: "auto", padding: "20px", paddingBottom: "max(env(safe-area-inset-bottom), 20px)", maxWidth: 600, margin: "0 auto", width: "100%", overscrollBehavior: "contain" }}>
+          {Object.keys(conversations).filter(d => conversations[d]?.length).length === 0 ? (
+            <div style={{ textAlign: "center", color: "rgba(255,255,255,0.4)", fontSize: 13, padding: "30px 10px" }}>
+              Niciun istoric încă. Discuțiile tale de zi cu zi vor apărea aici.
+            </div>
+          ) : (
+            Object.keys(conversations)
+              .filter(d => conversations[d]?.length)
+              .sort((a, b) => (a < b ? 1 : -1))
+              .map(d => {
+                const dayMsgs = conversations[d];
+                const isOpen = openHistoryDay === d;
+                return (
+                  <div key={d} style={{ marginBottom: 10, borderRadius: 14, border: "1px solid rgba(255,255,255,0.08)", overflow: "hidden" }}>
+                    <button onClick={() => setOpenHistoryDay(isOpen ? null : d)} style={{
+                      width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center",
+                      padding: "14px 16px", background: "rgba(255,255,255,0.03)", border: "none", cursor: "pointer", textAlign: "left",
+                    }}>
+                      <span style={{ fontSize: 14, fontWeight: 700, color: "#fff" }}>{formatDayLabel(d)}</span>
+                      <span style={{ fontSize: 12, color: "rgba(255,255,255,0.4)" }}>{dayMsgs.length} mesaje {isOpen ? "▲" : "▼"}</span>
+                    </button>
+                    {isOpen && (
+                      <div style={{ padding: 16, background: "rgba(255,255,255,0.015)" }}>
+                        {dayMsgs.map((m, i) => renderMessageBubble(m, i, { interactive: false }))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+          )}
         </div>
       )}
 
@@ -564,7 +633,7 @@ function Dashboard({ token, user, initialData, onLogout }) {
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1100, padding: 20 }} onClick={() => setShowResetConfirm(false)}>
           <div onClick={e => e.stopPropagation()} style={{ background: "#17171d", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 16, padding: 22, maxWidth: 340, width: "100%", boxShadow: "0 12px 40px rgba(0,0,0,0.5)" }}>
             <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 8 }}>Resetezi check-in-ul de azi?</div>
-            <div style={{ fontSize: 13, color: "rgba(255,255,255,0.55)", lineHeight: 1.5, marginBottom: 18 }}>Poți răspunde din nou la întrebări, dar conversația de azi se va șterge.</div>
+            <div style={{ fontSize: 13, color: "rgba(255,255,255,0.55)", lineHeight: 1.5, marginBottom: 18 }}>Poți răspunde din nou la întrebări; conversația de azi se va șterge, dar rămâne salvată în Istoric.</div>
             <div style={{ display: "flex", gap: 10 }}>
               <button onClick={() => setShowResetConfirm(false)} style={{ flex: 1, padding: "11px", borderRadius: 12, border: "1px solid rgba(255,255,255,0.15)", background: "transparent", color: "rgba(255,255,255,0.7)", fontWeight: 700, cursor: "pointer", fontSize: 14 }}>Anulează</button>
               <button onClick={confirmResetCheckin} style={{ flex: 1, padding: "11px", borderRadius: 12, border: "none", background: `linear-gradient(135deg,${ACCENT},${ACCENT2})`, color: "#fff", fontWeight: 800, cursor: "pointer", fontSize: 14 }}>Resetează</button>
