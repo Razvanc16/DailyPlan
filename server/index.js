@@ -46,11 +46,15 @@ ${habits || "(niciun obicei urmărit încă)"}
       }),
     });
     const data = await response.json();
-    if (data.error) return res.status(500).json({ error: "Eroare API." });
+    if (data.error) {
+      console.error("Eroare Anthropic API (/api/chat):", JSON.stringify(data.error));
+      return res.status(500).json({ error: "Eroare API: " + (data.error.message || "necunoscută") });
+    }
     const text = data.content.map(i => i.text || "").join("").trim();
     res.json({ reply: text });
   } catch (err) {
-    res.status(500).json({ error: "Nu am putut răspunde." });
+    console.error("Eroare server (/api/chat):", err);
+    res.status(500).json({ error: "Nu am putut răspunde: " + err.message });
   }
 });
 
